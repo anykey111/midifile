@@ -15,7 +15,9 @@
 (define (parse-midi-format data)
   (bitmatch data
     (((format 16) (num-tracks 16) (time-division 16 bitstring) (tracks bitstring))
-     (parse-midi-tracks num-tracks tracks (parse-midi-time-format time-division)))
+     (make-midifile format
+                    (parse-midi-time-format time-division)
+                    (parse-midi-tracks num-tracks tracks)))
     (else
      (error "invalid midi file header" (failure-location data)))))
 
@@ -26,7 +28,7 @@
     (((1 1) (frames 7) (clocks 8))
      (list 'frames-per-second frames clocks))))
 
-(define (parse-midi-tracks num-tracks tracks time-format)
+(define (parse-midi-tracks num-tracks tracks)
   (let loop ((i 1)
              (acc (list))
              (track tracks))
@@ -61,7 +63,6 @@
       (reverse acc)
       (receive (event status channel rest)
                (parse-midi-event track status channel)
-        (print event)
         (loop (cons event acc) status channel rest)))))
 
 (define (parse-midi-event track current-status current-channel)
