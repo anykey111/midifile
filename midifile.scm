@@ -1,29 +1,26 @@
-(use bitstring)
+(module midifile
+  (midifile-load)
+  (import scheme chicken)
+  (require-extension bitstring matchable utils)
 
 (define-record midifile format time-division tracks)
 
-(define (midi-file-open name)
+(define (midifile-load name)
   (bitmatch (read-all name)
     ((("MThd") (#x00000006 32) (rest bitstring))
      (parse-midi-format rest))
-    (else
-     (error "invalid midi file signature"))))
+    ((rest bitstring)
+     (error "invalid midi file signature" (failure-location rest)))))
 
 (define (parse-midi-format data)
   (bitmatch data
     (((format 16) (num-tracks 16) (time-division 16 bitstring) (tracks bitstring))
-     (if (> format 2)
-        (error "unsupported midi format" format))
-     (unless (and (= format 0) (= num-tracks))
-       (error "this midi format support only one track"))
-     (unless (and (= format 1) (> num-tracks 1))
-       (error "this midid format should have thow or more tracks"))
-     (parse-midi-tracks num-tracks tracks (parse-midi-time-format timi-division)))
+     (parse-midi-tracks num-tracks tracks (parse-midi-time-format time-division)))
     (else
-     (error "invalid midi file header"))))
+     (error "invalid midi file header" (failure-location data)))))
 
 (define (parse-midi-time-format time-division)
-  (bitmatch 
+  (bitmatch time-division
     (((0 1) (ticks 15))
      (list 'ticks-per-beat ticks))
     (((1 1) (frames 7) (clocks 8))
@@ -31,93 +28,131 @@
 
 (define (parse-midi-tracks num-tracks tracks time-format)
   (let loop ((i 1)
-             (data tracks)
-             (acc (list)))
-    (bitmatch data
-      ((("MTrk") (track-size 32) (track-data (* 8 track-size)) (rest bitstring))
+             (acc (list))
+             (track tracks))
+    (bitmatch track
+      ((("MTrk") (track-size 32) (track-data (* 8 track-size) bitstring) (rest bitstring))
        (if (< i num-tracks)
            (loop (add1 i)
                  (cons (parse-midi-track-events track-data) acc)
                  rest)
            (reverse acc)))
       (else
-       (error "invalid track header" i)))))
+       (error "invalid track header" i (failure-location track))))))
 
 (define (accumulate-length len d)
   (bitwise-ior (arithmetic-shift len 7) d))
 
-(define (parse-variable-length stream len)
-  (bitmatch stream
+(define (parse-variable-length data len)
+  (bitmatch data
     (((0 1) (d 7) (rest bitstring))
-     (valules (accumulate-length len d) rest))
+     (values (accumulate-length len d) rest))
     (((1 1) (d 7) (rest bitstring))
-     (parse-variable-length rest (accumulate-length len d)))))
+     (parse-variable-length rest (accumulate-length len d)))
+    (else
+     (error "missing variable length offset:" (failure-location data)))))
 
 (define (parse-midi-track-events track-data)
   (let loop ((acc (list))
+             (status 0)
+             (channel 0)
              (track track-data))
-    (receive (delta rest)
-             (parse-variable-length track 0)
+    (if (zero? (bitstring-length track))
+      (reverse acc)
+      (receive (event status channel rest)
+               (parse-midi-event track status channel)
+        (print event)
+        (loop (cons event acc) status channel rest)))))
+
+(define (parse-midi-event track current-status current-channel)
+  (receive (delta var-data)
+           (parse-variable-length track 0)
+    (receive (status channel rest)
+             (parse-midi-status-byte var-data current-status current-channel)
       (bitmatch rest
-        (()
-         (reverse acc))
-        (((#x8 4) (channel 4) (note 8) (velocity 8) (rest bitstring))
-         (loop (cons (list delta 'note-off channel note velocity) acc) rest))
-        (((#x9 4) (channel 4) (note 8) (velocity 8) (rest bitstring))
-         (loop (cons (list delta 'note-on channel note velocity) acc) rest))
-        (((#xA 4) (channel 4) (note 8) (value 8) (rest bitstring))
-         (loop (cons (list delta 'note-aftertouch channel note value)) rest))
-        (((#xB 4) (channel 4) (number 8) (value 8) (rest bitstring))
-         (loop (cons (list delta 'controller channel number value)) rest))
-        (((#xC 4) (channel 4) (number 8) (unused 8) (rest bitstring))
-         (loop (cons (list delta 'program-change channel number)) rest))
-        (((#xD 4) (channel 4) (value 8) (unused 8) (rest bitstring))
-         (loop (cons (list delta 'channel-aftertouch channel value)) rest))
-        (((#xE 4) (channel 4) (value 16) (rest bitstring))
-         (loop (cons (list delta 'pitch-bend channel value)) rest))
-        (((#xFF) (type 8) (event-data bitstring))
+        (((check (= status #x8)) (note 8) (velocity 8) (rest bitstring))
+         (values (list delta 'note-off channel note velocity) status channel rest))
+        (((check (= status #x9)) (note 8) (velocity 8) (rest bitstring))
+          (values (list delta 'note-on channel note velocity) status channel rest))
+        (((check (= status #xA)) (note 8) (value 8) (rest bitstring))
+         (values (list delta 'note-aftertouch channel note value) status channel rest))
+        (((check (= status #xB)) (number 8) (value 8) (rest bitstring))
+         (values (list delta 'controller channel number value) status channel rest))
+        (((check (= status #xC)) (number 8) (unused 8) (rest bitstring))
+         (values (list delta 'program-change channel number) status channel rest))
+        (((check (= status #xD)) (value 8) (unused 8) (rest bitstring))
+         (values (list delta 'channel-aftertouch channel value) status channel rest))
+        (((check (= status #xE)) (value 16) (rest bitstring))
+         (values (list delta 'pitch-bend channel value) status channel rest))
+        (((check (= status #xFF)) (type 8) (event-data bitstring))
          (receive (meta-event rest)
                   (parse-midi-meta-event delta type event-data)
-           (loop (cons meta-event acc) rest)))
-        (((#xF7) (event-data bitstring))
+                  (values meta-event status channel rest)))
+        (((check (= status #xF7)) (event-data bitstring))
          (receive (sysex-event rest)
                   (parse-authorization-sysex-event delta event-data)
-           (loop (cons sysex-event acc) rest)))
+                  (values sysex-event status channel rest)))
+        (((check (= status #xF0)) (event-data bitstring))
+         (receive (sysex-event rest)
+                  (parse-midi-sysex-event delta event-data)
+                  (values sysex-event status channel rest)))
         (else
-         (parse-midi-sysex-event delta rest))))))
+         (error "unknown midi event" (failure-location rest)))))))
+
+(define (parse-midi-status-byte event-data current-status current-channel)
+  (bitmatch event-data
+    (((0 1) (rest bitstring))
+     ; reuse status byte
+     (values current-status current-channel event-data))
+    (((s 8) (check (or (= s #xFF) (= s #xF0) (= s #xF7))) (rest bitstring))
+     ; setup meta event or sysex event status
+     (values s 0 rest))
+    (((status 4) (channel 4) (rest bitstring))
+     ; change channel command status
+     (values status channel rest))))
 
 (define (parse-midi-meta-event delta type event-data)
-  (receive (var-data len)
+  (receive (len var-data)
            (parse-variable-length event-data 0)
     (bitmatch var-data
       (((data (* len 8) bitstring) (rest bitstring))
-       (values (list delta 'meta-event type data) rest))
+       (values (list delta 'meta-event type (bitstring->blob data)) rest))
       (else
-       (error "invalid meta-event length")))))
+       (error "invalid meta-event length" (failure-location var-data))))))
 
 (define (parse-authorization-sysex-event delta event-data)
   (receive (len var-data)
            (parse-variable-length event-data 0)
     (bitmatch var-data
       (((data (* len 8) bitstring) (rest bitstring))
-       (values (list delta 'sysex-event data) rest))
+       (values (list delta 'sysex-event (bitstring->blob data)) rest))
       (else
-       (error "invalid authorization sysex event")))))
+       (error "invalid authorization sysex event" (failure-location var-data))))))
 
 (define (parse-midi-sysex-event delta event-data)
+  (define (concat-sysex-data lst)
+    (bitstring->blob (apply bitstring-append (reverse lst))))
   (let loop ((acc (bitstring-create))
              (event-data event-data))
-    (bitmatch event-data
-      (((#xF0) (message bitstring))
-       (receive (len var-data)
-                (parse-variable-length message 0)
-         (bitmatch var-data
-           (((data (* len 8) bitstring) (#xF7) (rest bitstring))
-            ; normal message
-            (values (list delta 'sysex-event (bitstring-append acc data)) rest))
-           (((data (* len 8) bitstring) (rest bitstring))
-            ; divided message
-            (loop (bitstring-append acc data) rest)))))
-      (else
-       (error "invalid midi event")))))
+    (receive (len var-data)
+             (parse-variable-length event-data 0)
+      (bitmatch var-data
+        (((data (* len 8) bitstring) (#xF7) (rest bitstring))
+         ; normal message
+         (values (list delta 'sysex-event (concat-sysex-data (cons data acc))) rest))
+        (((data (* len 8) bitstring) (#xF0) (rest bitstring))
+         ; divided message
+         (loop (cons data acc) rest))
+        (else
+         (error "invalid sysex-event" (failure-location var-data)))))))
 
+(define (failure-location rest)
+  (let ((offset (/ (bitstring-offset rest) 8)))
+    (list 'offset offset
+          'bytes (bitstring->blob
+                   (bitmatch rest
+                     (((first-bytes 64 bitstring) (_rest bitstring))
+                      first-bytes)
+                     (else rest))))))
+
+)
