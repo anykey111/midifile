@@ -15,27 +15,26 @@
              (acc init))
     (receive (events rest)
              (take-events tracks)
-      (let pump ((lst events)
-                 (bpm bpm)
-                 (acc acc))
-        (if (null-list? lst)
-          (unless (null-list? rest)
-            (loop rest bpm acc))
-          (pump (cdr lst)
-                (change-tempo bpm (car lst))
-                (proc (car lst) acc)))))))
+      (if (null-list? rest)
+        acc
+        (let ((delta (car events))
+              (lst (cdr events)))
+          (loop rest (fold change-tempo bpm lst) (fold proc acc lst)))))))
 
-(define (change-tempo bpm event)
+(define (change-tempo event bpm)
   (match event
     ((delta 'meta-event #x51 value)
      (bitmatch value
-       ((microseconds-per-quarter-note 24)
+       (((microseconds-per-quarter-note 24))
         (/ microseconds-per-minute microseconds-per-quarter-note))))
     (else
       bpm)))
 
 (define (take-events tracks)
-  (match (sort tracks (lambda (a b) (< (car a) (car b))))
+  (match (sort tracks (lambda (a b)
+                        (cond ((null-list? a) #t)
+                              ((null-list? b) #f)
+                              (else (< (caar a) (caar b))))))
     (()
      ; no more tracks
      (values '() tracks))
@@ -52,11 +51,11 @@
   (let ((delta (car e)))
     (match lst
       (()
-       (list delta e))
+       (cons (list delta e) lst))
       ((h . rest)
-       (if (= (car e) (car h))
+       (if (= delta (car h))
          (cons (append h (list e)) rest)
-         (cons (list delta e) rest))))))
+         (cons (list delta e) lst))))))
 
 ; LOADING --------------------------------------------------------------------
 
