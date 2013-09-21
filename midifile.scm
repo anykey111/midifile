@@ -1,9 +1,64 @@
 (module midifile
-  (midifile-load midifile-save)
+  (midifile-load midifile-save midifile-sequencer)
   (import scheme chicken)
-  (require-extension bitstring matchable utils posix)
+  (use bitstring matchable utils posix srfi-1 data-structures)
 
 (define-record midifile format division tracks)
+
+; SEQUENCER ------------------------------------------------------------------
+
+(define-constant microseconds-per-minute 60000000.0)
+
+(define (midifile-sequencer proc init mf)
+  (let loop ((tracks (map group-events-by-delta (midifile-tracks mf)))
+             (bpm 120.0)
+             (acc init))
+    (receive (events rest)
+             (take-events tracks)
+      (let pump ((lst events)
+                 (bpm bpm)
+                 (acc acc))
+        (if (null-list? lst)
+          (unless (null-list? rest)
+            (loop rest bpm acc))
+          (pump (cdr lst)
+                (change-tempo bpm (car lst))
+                (proc (car lst) acc)))))))
+
+(define (change-tempo bpm event)
+  (match event
+    ((delta 'meta-event #x51 value)
+     (bitmatch value
+       ((microseconds-per-quarter-note 24)
+        (/ microseconds-per-minute microseconds-per-quarter-note))))
+    (else
+      bpm)))
+
+(define (take-events tracks)
+  (match (sort tracks (lambda (a b) (< (car a) (car b))))
+    (()
+     ; no more tracks
+     (values '() tracks))
+    ((() . rest)
+     ; no more events in track
+     (take-events rest))
+    ((h . rest)
+     (values (car h) (cons (cdr h) rest)))))
+
+(define (group-events-by-delta track)
+  (reverse (fold insert-track-event '() track)))
+
+(define (insert-track-event e lst)
+  (let ((delta (car e)))
+    (match lst
+      (()
+       (list delta e))
+      ((h . rest)
+       (if (= (car e) (car h))
+         (cons (append h (list e)) rest)
+         (cons (list delta e) rest))))))
+
+; LOADING --------------------------------------------------------------------
 
 (define (midifile-load name)
   (bitmatch (read-all name)
@@ -11,105 +66,6 @@
      (parse-midi-format rest))
     ((rest bitstring)
      (error "invalid midi file signature" (failure-location rest)))))
-
-(define (midifile-save mf name)
-  (let ((fd (file-open name (+ open/write open/creat open/trunc))))
-    (file-write fd
-       (bitstring->blob
-        (bitconstruct
-         ("MThd")
-         (#x00000006 32)
-         ((midifile-format mf) 16)
-         ((length (midifile-tracks mf)) 16)
-         ((store-midi-time-division mf) bitstring)
-         ((store-midi-tracks mf) bitstring))))
-    (file-close fd)))
-
-(define (store-midi-time-division mf)
-  (match (midifile-division mf)
-    (('ticks-per-beat ticks)
-     (bitconstruct (0 1) (ticks 15)))
-    (('frames-per-second frames clocks)
-     (bitconstruct (1 1) (frames 7) (clocks 8)))))
-
-(define (store-midi-tracks mf)
-  (let loop ((acc (list))
-             (tracks (midifile-tracks mf)))
-    (match tracks
-      (()
-       (let* ((track-data (apply bitstring-append (reverse acc)))
-              (track-size (quotient (bitstring-length track-data) 8)))
-         (bitconstruct ("MTrk")
-                       (track-size 32)
-                       (track-data bitstring))))
-      ((track . rest)
-       (loop (cons (store-midi-track track) acc) rest)))))
-
-(define (make-status-byte status channel)
-  (bitwise-ior (arithmetic-shift status 4) channel))
-           
-(define (store-midi-track track)
-  (define acc (bitstring-create))
-  (let loop ((running-status 0)
-             (lst track))
-    (match lst
-     (()
-       acc)
-     (((delta 'sysex-event status data) . rest)
-       ; todo: handle divided message
-       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
-                                            (status 8)
-                                             ((store-variable-length (blob-size data)) bitstring)
-                                            (data bitstring)))
-       (loop status rest))
-     (((delta 'meta-event type data) . rest)
-       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
-                                            (#xFF)
-                                            (type 8)
-                                            ((store-variable-length (blob-size data)) bitstring)
-                                            (data bitstring)))
-       (loop #xFF rest))
-     (((delta midi-event status channel . args) . rest)
-      (let ((status-byte (make-status-byte status channel)))
-        (if (= running-status status-byte)
-          (begin ; omit status byte
-            (bitstring-append! acc (bitconstruct
-                                    ((store-variable-length delta) bitstring)
-                                    ((store-midi-event-data midi-event args) bitstring)))
-            (loop running-status rest))
-          (begin ; setup new running status
-            (bitstring-append! acc (bitconstruct
-                                    ((store-variable-length delta) bitstring)
-                                    (status-byte 8)
-                                    ((store-midi-event-data midi-event args) bitstring)))
-            (loop status-byte rest)))))
-      ((midi-event . rest)
-       (error "unknown midi event" midi-event)))))
-       
-      
-(define (store-midi-event-data id args)
-  (match (cons id args)
-    (('note-on note velocity)
-     (bitconstruct (note 8) (velocity 8)))
-    (('note-off note velocity)
-     (bitconstruct (note 8) (velocity 8)))
-    (('note-aftertouch note value)
-     (bitconstruct (note 8) (value 8)))
-    (('controller number value)
-     (bitconstruct (number 8) (value 8)))
-    (('program-change number)
-     (bitconstruct (number 8) (0 8)))
-    (('channel-aftertouch value)
-     (bitconstruct (value 8) (0 8)))
-    (('pitch-bend value)
-     (bitconstruct (value 16)))))         
-
-(define (store-variable-length len #!optional (acc (list)))
-  (if (and (zero? len) (not (eq? '() acc)))
-    (apply bitstring-append (reverse acc))
-    (store-variable-length (arithmetic-shift len -7)
-                           (cons (bitconstruct (1 1) ((bitwise-and len #x7F) 7))
-                                 acc))))
 
 (define (parse-midi-format data)
   (bitmatch data
@@ -255,4 +211,104 @@
                       first-bytes)
                      (else rest))))))
 
+;; SAVING ---------------------------------------------------------------------
+
+(define (midifile-save mf name)
+  (let ((fd (file-open name (+ open/write open/creat open/trunc))))
+    (file-write fd
+       (bitstring->blob
+        (bitconstruct
+         ("MThd")
+         (#x00000006 32)
+         ((midifile-format mf) 16)
+         ((length (midifile-tracks mf)) 16)
+         ((store-midi-time-division mf) bitstring)
+         ((store-midi-tracks mf) bitstring))))
+    (file-close fd)))
+
+(define (store-midi-time-division mf)
+  (match (midifile-division mf)
+    (('ticks-per-beat ticks)
+     (bitconstruct (0 1) (ticks 15)))
+    (('frames-per-second frames clocks)
+     (bitconstruct (1 1) (frames 7) (clocks 8)))))
+
+(define (store-midi-tracks mf)
+  (let loop ((acc (list))
+             (tracks (midifile-tracks mf)))
+    (match tracks
+      (()
+       (let* ((track-data (apply bitstring-append (reverse acc)))
+              (track-size (quotient (bitstring-length track-data) 8)))
+         (bitconstruct ("MTrk")
+                       (track-size 32)
+                       (track-data bitstring))))
+      ((track . rest)
+       (loop (cons (store-midi-track track) acc) rest)))))
+
+(define (make-status-byte status channel)
+  (bitwise-ior (arithmetic-shift status 4) channel))
+
+(define (store-midi-track track)
+  (define acc (bitstring-create))
+  (let loop ((running-status 0)
+             (lst track))
+    (match lst
+     (()
+       acc)
+     (((delta 'sysex-event status data) . rest)
+       ; todo: handle divided message
+       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
+                                            (status 8)
+                                            ((store-variable-length (blob-size data)) bitstring)
+                                            (data bitstring)))
+       (loop status rest))
+     (((delta 'meta-event type data) . rest)
+       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
+                                            (#xFF)
+                                            (type 8)
+                                            ((store-variable-length (blob-size data)) bitstring)
+                                            (data bitstring)))
+       (loop #xFF rest))
+     (((delta midi-event status channel . args) . rest)
+      (let ((status-byte (make-status-byte status channel)))
+        (if (= running-status status-byte)
+          (begin ; omit status byte
+            (bitstring-append! acc (bitconstruct
+                                    ((store-variable-length delta) bitstring)
+                                    ((store-midi-event-data midi-event args) bitstring)))
+            (loop running-status rest))
+          (begin ; setup new running status
+            (bitstring-append! acc (bitconstruct
+                                    ((store-variable-length delta) bitstring)
+                                    (status-byte 8)
+                                    ((store-midi-event-data midi-event args) bitstring)))
+            (loop status-byte rest)))))
+      ((midi-event . rest)
+       (error "unknown midi event" midi-event)))))
+
+
+(define (store-midi-event-data id args)
+  (match (cons id args)
+    (('note-on note velocity)
+     (bitconstruct (note 8) (velocity 8)))
+    (('note-off note velocity)
+     (bitconstruct (note 8) (velocity 8)))
+    (('note-aftertouch note value)
+     (bitconstruct (note 8) (value 8)))
+    (('controller number value)
+     (bitconstruct (number 8) (value 8)))
+    (('program-change number)
+     (bitconstruct (number 8) (0 8)))
+    (('channel-aftertouch value)
+     (bitconstruct (value 8) (0 8)))
+    (('pitch-bend value)
+     (bitconstruct (value 16)))))
+
+(define (store-variable-length len #!optional (acc (list)))
+  (if (and (zero? len) (not (eq? '() acc)))
+    (apply bitstring-append (reverse acc))
+    (store-variable-length (arithmetic-shift len -7)
+                           (cons (bitconstruct (1 1) ((bitwise-and len #x7F) 7))
+                                 acc))))
 )
