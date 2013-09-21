@@ -1,34 +1,65 @@
 (module midifile
   (midifile-load midifile-save midifile-sequencer)
   (import scheme chicken)
-  (use bitstring matchable utils posix srfi-1 data-structures)
+  (use bitstring matchable defstruct utils posix srfi-1 data-structures)
 
-(define-record midifile format division tracks)
+(defstruct midifile format division tracks)
 
 ; SEQUENCER ------------------------------------------------------------------
 
-(define-constant microseconds-per-minute 60000000.0)
+(defstruct tempo
+  bpm   ; bits per minute
+  mpqn  ; microseconds per quarter-note
+  num   ; time signature numerator
+  den   ; time signature denominator
+  metro ; metronome pulse
+  n32)  ; notes in a quarter-note
+
+(define (make-default-tempo)
+  (make-tempo bpm: 120.0 mpqn: 500000.0 num: 4.0 den: 4.0 metro: 24 n32: 8))
 
 (define (midifile-sequencer proc init mf)
+  (print "format:" (midifile-format mf))
+  (print "division:" (midifile-division mf))
+
+  (define delta->seconds (delta-time-converter (midifile-division mf)))
   (let loop ((tracks (map group-events-by-delta (midifile-tracks mf)))
-             (bpm 120.0)
+             (tempo (make-default-tempo))
+             (current-time 0.0)
              (acc init))
     (receive (events rest)
              (take-events tracks)
       (if (null-list? rest)
         acc
-        (let ((delta (car events))
-              (lst (cdr events)))
-          (loop rest (fold change-tempo bpm lst) (fold proc acc lst)))))))
+        (let* ((delta (car events))
+               (lst (cdr events))
+               (t (+ current-time (delta->seconds delta tempo))))
+          (loop rest (fold handle-tempo-change tempo lst) t (fold proc t lst)))))))
 
-(define (change-tempo event bpm)
+(define (delta-time-converter division)
+  (match division
+    (('ticks-per-beat ticks)
+     (lambda (delta tempo)
+       (let* ((seconds-per-quarter-note (/ (tempo-mpqn tempo) 1000.0))
+              (seconds-per-tick (/ seconds-per-quarter-note ticks)))
+         (* delta seconds-per-tick))))
+    (('frames-per-second frames clocks)
+     (assert #f "frames-per-seconds convertion not implemeted"))))
+
+(define (handle-tempo-change event tempo)
   (match event
-    ((delta 'meta-event #x51 value)
+    ((_ 'meta-event #x51 value)
      (bitmatch value
-       (((microseconds-per-quarter-note 24))
-        (/ microseconds-per-minute microseconds-per-quarter-note))))
+       (((microseconds-peq-quarter-note 24))
+        (print "set-tempo: " microseconds-peq-quarter-note)
+        (update-tempo tempo mpqn: microseconds-peq-quarter-note))))
+    ((_ 'meta-event #x58 value)
+     (bitmatch value
+       (((num 8) (den 8) (metro 8) (n32 8))
+        (print "set-time-signature: " num " " den " " metro " " n32)
+        (update-tempo tempo num: num den: den metor: metro n32: n32))))
     (else
-      bpm)))
+      tempo)))
 
 (define (take-events tracks)
   (match (sort tracks (lambda (a b)
@@ -69,9 +100,10 @@
 (define (parse-midi-format data)
   (bitmatch data
     (((format 16) (num-tracks 16) (time-division 16 bitstring) (tracks bitstring))
-     (make-midifile format
-                    (parse-midi-time-format time-division)
-                    (parse-midi-tracks num-tracks tracks)))
+     (make-midifile
+       format: format
+       division: (parse-midi-time-format time-division)
+       tracks: (parse-midi-tracks num-tracks tracks)))
     (else
      (error "invalid midi file header" (failure-location data)))))
 
