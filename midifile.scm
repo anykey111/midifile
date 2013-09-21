@@ -10,8 +10,8 @@
 (defstruct tempo
   bpm   ; bits per minute
   mpqn  ; microseconds per quarter-note
-  num   ; time signature numerator
-  den   ; time signature denominator
+  num   ; beats per bar
+  den   ; number of quarter notes in a beat
   metro ; metronome pulse
   n32)  ; notes in a quarter-note
 
@@ -19,74 +19,83 @@
   (make-tempo bpm: 120.0 mpqn: 500000.0 num: 4.0 den: 4.0 metro: 24 n32: 8))
 
 (define (midifile-sequencer proc init mf)
-  (print "format:" (midifile-format mf))
-  (print "division:" (midifile-division mf))
-
   (define delta->seconds (delta-time-converter (midifile-division mf)))
-  (let loop ((tracks (map group-events-by-delta (midifile-tracks mf)))
+  (let loop ((events (tracks->events (midifile-tracks mf)))
              (tempo (make-default-tempo))
-             (current-time 0.0)
-             (acc init))
-    (receive (events rest)
-             (take-events tracks)
-      (if (null-list? rest)
-        acc
-        (let* ((delta (car events))
-               (lst (cdr events))
-               (t (+ current-time (delta->seconds delta tempo))))
-          (loop rest (fold handle-tempo-change tempo lst) t (fold proc t lst)))))))
+             (seconds 0.0); sequencer time in seconds
+             (offset 0)   ; offset in delta ticks
+             (acc init))  ; user state
+    (if (null-list? events)
+      acc
+      (let* ((event (car events))
+             (id (car event))
+             (at (cadr event))
+             (args (cddr event))
+             (delta (- at offset))
+             (delta-time (delta->seconds delta tempo))
+             (seconds (+ seconds delta-time))
+             (stamped-event (cons id (cons seconds args))))
+        (loop (cdr events)
+              (handle-tempo-change tempo args)
+              seconds
+              at
+              (proc event acc))))))
 
 (define (delta-time-converter division)
   (match division
     (('ticks-per-beat ticks)
      (lambda (delta tempo)
-       (let* ((seconds-per-quarter-note (/ (tempo-mpqn tempo) 1000.0))
+       ; same as using BPM to measure time: (* delta (/ 60 (* bpm ticks)))
+       (let* ((seconds-per-quarter-note (/ (tempo-mpqn tempo) 1000000.0))
               (seconds-per-tick (/ seconds-per-quarter-note ticks)))
          (* delta seconds-per-tick))))
     (('frames-per-second frames clocks)
      (assert #f "frames-per-seconds convertion not implemeted"))))
 
-(define (handle-tempo-change event tempo)
-  (match event
-    ((_ 'meta-event #x51 value)
+(define (handle-tempo-change tempo args)
+  (match args
+    (('meta-event #x51 value)
      (bitmatch value
        (((microseconds-peq-quarter-note 24))
-        (print "set-tempo: " microseconds-peq-quarter-note)
-        (update-tempo tempo mpqn: microseconds-peq-quarter-note))))
-    ((_ 'meta-event #x58 value)
+        (set-tempo tempo microseconds-peq-quarter-note))))
+    (('meta-event #x58 value)
      (bitmatch value
        (((num 8) (den 8) (metro 8) (n32 8))
-        (print "set-time-signature: " num " " den " " metro " " n32)
-        (update-tempo tempo num: num den: den metor: metro n32: n32))))
+        (update-tempo tempo num: num den: (expt 2 den) metro: metro n32: n32))))
     (else
       tempo)))
 
-(define (take-events tracks)
-  (match (sort tracks (lambda (a b)
-                        (cond ((null-list? a) #t)
-                              ((null-list? b) #f)
-                              (else (< (caar a) (caar b))))))
-    (()
-     ; no more tracks
-     (values '() tracks))
-    ((() . rest)
-     ; no more events in track
-     (take-events rest))
-    ((h . rest)
-     (values (car h) (cons (cdr h) rest)))))
+(define (set-tempo tempo mpqn)
+  (update-tempo tempo
+    ;FIXME: not sure how to use num/den properly
+    ;FIXME: so bpm calculation for time-signature other than 4/4 maybe incorrect.
+    bpm: (* (/ 60000000 mpqn)
+            (/ (tempo-num tempo) (tempo-den tempo)))
+    mpqn: mpqn))
 
-(define (group-events-by-delta track)
-  (reverse (fold insert-track-event '() track)))
+(define (tracks->events tracks)
+  (let loop ((id 1)
+             (acc '())
+             (lst tracks))
+    (if (null-list? lst)
+      (sort (apply append (reverse acc))
+            (lambda (a b) (< (cadr a) (cadr b))))
+      (loop (add1 id)
+            (cons (numerate-track-events (car lst) id) acc)
+            (cdr lst)))))
 
-(define (insert-track-event e lst)
-  (let ((delta (car e)))
+(define (numerate-track-events track id)
+  (let loop ((offset 0)
+             (acc '())
+             (lst track))
     (match lst
       (()
-       (cons (list delta e) lst))
-      ((h . rest)
-       (if (= delta (car h))
-         (cons (append h (list e)) rest)
-         (cons (list delta e) lst))))))
+       (reverse acc))
+      (((delta . args) . rest)
+       (let ((new-offset (+ offset delta)))
+         (loop new-offset (cons (cons id (cons new-offset args)) acc) rest)))
+      (other
+        (error "invalid event" other)))))
 
 ; LOADING --------------------------------------------------------------------
 
