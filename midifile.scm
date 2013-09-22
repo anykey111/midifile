@@ -39,7 +39,7 @@
               (handle-tempo-change tempo args)
               seconds
               at
-              (proc event acc))))))
+              (proc stamped-event acc))))))
 
 (define (delta-time-converter division)
   (match division
@@ -67,10 +67,8 @@
 
 (define (set-tempo tempo mpqn)
   (update-tempo tempo
-    ;FIXME: not sure how to use num/den properly
-    ;FIXME: so bpm calculation for time-signature other than 4/4 maybe incorrect.
     bpm: (* (/ 60000000 (min 1 mpqn))
-            (/ (tempo-num tempo) (tempo-den tempo)))
+            (/ (tempo-den tempo) 4.))
     mpqn: mpqn))
 
 (define (tracks->events tracks)
