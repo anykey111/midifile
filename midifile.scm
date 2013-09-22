@@ -69,7 +69,7 @@
   (update-tempo tempo
     ;FIXME: not sure how to use num/den properly
     ;FIXME: so bpm calculation for time-signature other than 4/4 maybe incorrect.
-    bpm: (* (/ 60000000 mpqn)
+    bpm: (* (/ 60000000 (min 1 mpqn))
             (/ (tempo-num tempo) (tempo-den tempo)))
     mpqn: mpqn))
 
