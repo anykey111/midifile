@@ -50,8 +50,15 @@
        (let* ((seconds-per-quarter-note (/ (tempo-mpqn tempo) 1000000.0))
               (seconds-per-tick (/ seconds-per-quarter-note ticks)))
          (* delta seconds-per-tick))))
-    (('frames-per-second frames clocks)
-     (assert #f "frames-per-seconds convertion not implemeted"))))
+    (('frames-per-second frames ticks)
+     (let* ((rate (case frames ((#xE8) 24.)
+                               ((#xE7) 25.)
+                               ((#xE3) 29.97)
+                               ((#xE2) 30.)
+                               (else (error "invalid SMPTE frame-rate" frames))))
+            (seconds-per-frame (/ 1. rate)))
+       (lambda (delta tempo)
+         (* (/ delta ticks) seconds-per-frame))))))
 
 (define (handle-tempo-change tempo args)
   (match args
@@ -119,7 +126,7 @@
   (bitmatch time-division
     (((0 1) (ticks 15))
      (list 'ticks-per-beat ticks))
-    (((1 1) (frames 7) (clocks 8))
+    (((frames 8) (clocks 8))
      (list 'frames-per-second frames clocks))))
 
 (define (parse-midi-tracks num-tracks tracks)
@@ -270,7 +277,7 @@
     (('ticks-per-beat ticks)
      (bitconstruct (0 1) (ticks 15)))
     (('frames-per-second frames clocks)
-     (bitconstruct (1 1) (frames 7) (clocks 8)))))
+     (bitconstruct (frames 8) (clocks 8)))))
 
 (define (store-midi-tracks mf)
   (define all-tracks (bitstring-create))
