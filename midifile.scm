@@ -40,7 +40,7 @@
               (handle-tempo-change tempo args)
               seconds
               at
-              (proc stamped-event acc))))))
+              (proc stamped-event (tempo-bpm tempo) acc))))))
 
 (define (delta-time-converter division)
   (match division
