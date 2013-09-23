@@ -337,9 +337,9 @@
     (('controller number value)
      (bitconstruct (number 8) (value 8)))
     (('program-change number)
-     (bitconstruct (number 8) (0 8)))
+     (bitconstruct (number 8)))
     (('channel-aftertouch value)
-     (bitconstruct (value 8) (0 8)))
+     (bitconstruct (value 8)))
     (('pitch-bend value)
      (bitconstruct (value 16)))))
 
