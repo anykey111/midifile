@@ -123,16 +123,16 @@
      (list 'frames-per-second frames clocks))))
 
 (define (parse-midi-tracks num-tracks tracks)
-  (let loop ((i 1)
+  (let loop ((i 0)
              (acc (list))
              (track tracks))
     (bitmatch track
+      (()
+       (if (= i num-tracks)
+         (reverse acc)
+         (error "invalid track count in header" i num-tracks)))
       ((("MTrk") (track-size 32) (track-data (* 8 track-size) bitstring) (rest bitstring))
-       (if (< i num-tracks)
-           (loop (add1 i)
-                 (cons (parse-midi-track-events track-data) acc)
-                 rest)
-           (reverse acc)))
+       (loop (add1 i) (cons (parse-midi-track-events track-data) acc) rest))
       (else
        (error "invalid track header" i (failure-location track))))))
 
