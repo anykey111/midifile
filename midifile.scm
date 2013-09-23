@@ -67,7 +67,7 @@
 
 (define (set-tempo tempo mpqn)
   (update-tempo tempo
-    bpm: (* (/ 60000000 (min 1 mpqn))
+    bpm: (* (/ 60000000 (max 1 mpqn))
             (/ (tempo-den tempo) 4.))
     mpqn: mpqn))
 
