@@ -73,7 +73,7 @@
     mpqn: mpqn))
 
 (define (tracks->events tracks)
-  (let loop ((id 1)
+  (let loop ((id 0)
              (acc '())
              (lst tracks))
     (if (null-list? lst)
