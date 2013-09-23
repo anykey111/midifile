@@ -1,5 +1,6 @@
 (module midifile
-  (midifile-load midifile-save midifile-sequencer)
+  (midifile-load midifile-save midifile-sequencer
+   midifile? midifile-tracks midifile-format midifile-division)
   (import scheme chicken)
   (use bitstring matchable defstruct utils posix srfi-1 data-structures)
 
