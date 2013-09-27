@@ -301,41 +301,60 @@
     (match lst
      (()
        acc)
-     (((delta 'sysex-event status data) . rest)
-       ; todo: handle divided message
-       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
-                                            (status 8)
-                                            ((store-variable-length (blob-size data)) bitstring)
-                                            (data bitstring)))
-       (loop status rest))
-     (((delta 'meta-event type data) . rest)
-       (bitstring-append! acc (bitconstruct ((store-variable-length delta) bitstring)
-                                            (#xFF)
-                                            (type 8)
-                                            ((store-variable-length (blob-size data)) bitstring)
-                                            (data bitstring)))
-       (loop #xFF rest))
-     (((delta midi-event status channel . args) . rest)
-      (let ((status-byte (make-status-byte status channel))
-            (event-data (store-midi-event-data midi-event args)))
-        (if (= running-status status-byte)
-          (begin ; omit status byte
-            (bitstring-append! acc (store-midi-event delta #f event-data))
-            (loop running-status rest))
-          (begin ; setup new running status
-            (bitstring-append! acc (store-midi-event delta status-byte event-data))
-            (loop status-byte rest)))))
-      ((midi-event . rest)
-       (error "unknown midi event" midi-event)))))
+     ((e . rest)
+       (receive (message status)
+         (store-event e running-status #t)
+         (bitstring-append! acc message)
+         (loop status rest))))))
 
-(define (store-midi-event delta status-byte event-data)
-  (if status-byte
-      (bitconstruct ((store-variable-length delta) bitstring)
-                    (status-byte 8)
-                    (event-data bitstring))
-      (bitconstruct ((store-variable-length delta) bitstring)
-                    (event-data bitstring))))
-  
+(define (store-event event running-status save-delta?)
+  (match event
+    ((delta 'sysex-event status data)
+     (values (bitstring->blob (store-sysex-event (and save-delta? delta) status data))
+             status))
+    (((delta 'meta-event type data) . rest)
+     (values (bitstring->blob (store-meta-event (and save-delta? delta) #xFF type data))
+             #xFF))
+   (((delta midi-event status channel . args) . rest)
+    (let ((status-byte (make-status-byte status channel))
+          (data (store-midi-event-data midi-event args)))
+      (if (= running-status status-byte)
+        ; omit status byte
+        (values (bitstring->blob (store-midi-event (and save-delta? delta) #f data))
+                running-status)
+        ; setup new running status
+        (values (bitstring->blob (store-midi-event (and save-delta? delta) status-byte data))
+                status-byte))))
+   (else
+     (error "unknown midi event" event))))
+
+(define (store-delta delta)
+  (if delta (store-variable-length delta) '#${}))
+
+(define (store-status-byte status)
+  (if status (bitconstruct (status 8)) '#{}))
+
+(define (store-sysex-event delta status data)
+  ; todo: handle divided message
+  (bitconstruct
+    ((store-delta) bitstring)
+    (status 8)
+    ((store-variable-length (blob-size data)) bitstring)
+    (data bitstring)))
+
+(define (store-meta-event delta status type data)
+  (bitconstruct
+    ((store-delta delta) bitstring)
+    (status 8)
+    (type 8)
+    (data bitstring)))
+
+(define (store-midi-event delta status data)
+  (bitconstruct
+    ((store-delta delta) bitstring)
+    ((store-status-byte status) bitstring)
+    (data bitstring)))
+
 (define (store-midi-event-data id args)
   (match (cons id args)
     (('note-on note velocity)
