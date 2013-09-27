@@ -314,10 +314,10 @@
 (define (store-event event running-status save-delta?)
   (match event
     ((delta 'sysex-event status data)
-     (values (bitstring->blob (store-sysex-event (and save-delta? delta) status data))
+     (values (store-sysex-event (and save-delta? delta) status data)
              status))
     ((delta 'meta-event type data)
-     (values (bitstring->blob (store-meta-event (and save-delta? delta) #xFF type data))
+     (values (store-meta-event (and save-delta? delta) #xFF type data)
              #xFF))
     ((delta midi-event status channel . args)
      (let ((status-byte (make-status-byte status channel))
