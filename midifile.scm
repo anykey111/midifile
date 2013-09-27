@@ -355,6 +355,7 @@
     ((store-delta delta) bitstring)
     (status 8)
     (type 8)
+    ((store-variable-length (blob-size data)) bitstring)
     (data bitstring)))
 
 (define (store-midi-event delta status data)
