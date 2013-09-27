@@ -1,6 +1,7 @@
 (module midifile
   (midifile-load midifile-save midifile-sequencer
-   midifile? midifile-tracks midifile-format midifile-division)
+   midifile? midifile-tracks midifile-format midifile-division
+   midifile-pack-event)
   (import scheme chicken)
   (use bitstring matchable defstruct utils posix srfi-1 data-structures)
 
@@ -259,6 +260,9 @@
 
 ;; SAVING ---------------------------------------------------------------------
 
+(define (midifile-pack-event event #!key (running-status 0) (pack-delta? #f))
+  (bitstring->blob (store-event event running-status pack-delta?)))
+
 (define (midifile-save mf name)
   (let ((fd (file-open name (+ open/write open/creat open/trunc open/binary))))
     (file-write fd
@@ -312,32 +316,36 @@
     ((delta 'sysex-event status data)
      (values (bitstring->blob (store-sysex-event (and save-delta? delta) status data))
              status))
-    (((delta 'meta-event type data) . rest)
+    ((delta 'meta-event type data)
      (values (bitstring->blob (store-meta-event (and save-delta? delta) #xFF type data))
              #xFF))
-   (((delta midi-event status channel . args) . rest)
-    (let ((status-byte (make-status-byte status channel))
-          (data (store-midi-event-data midi-event args)))
-      (if (= running-status status-byte)
-        ; omit status byte
-        (values (bitstring->blob (store-midi-event (and save-delta? delta) #f data))
-                running-status)
-        ; setup new running status
-        (values (bitstring->blob (store-midi-event (and save-delta? delta) status-byte data))
-                status-byte))))
-   (else
-     (error "unknown midi event" event))))
+    ((delta midi-event status channel . args)
+     (let ((status-byte (make-status-byte status channel))
+           (data (store-midi-event-data midi-event args)))
+       (if (= running-status status-byte)
+         ; omit status byte
+         (values (store-midi-event (and save-delta? delta) #f data)
+                 running-status)
+         ; setup new running status
+         (values (store-midi-event (and save-delta? delta) status-byte data)
+                 status-byte))))
+    (else
+      (error "unknown midi event" event))))
 
 (define (store-delta delta)
-  (if delta (store-variable-length delta) '#${}))
+  (if delta
+    (store-variable-length delta)
+    (->bitstring '#${})))
 
 (define (store-status-byte status)
-  (if status (bitconstruct (status 8)) '#{}))
+  (if status
+    (bitconstruct (status 8))
+    (->bitstring '#${})))
 
 (define (store-sysex-event delta status data)
   ; todo: handle divided message
   (bitconstruct
-    ((store-delta) bitstring)
+    ((store-delta delta) bitstring)
     (status 8)
     ((store-variable-length (blob-size data)) bitstring)
     (data bitstring)))
