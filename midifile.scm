@@ -36,7 +36,7 @@
              (delta (- at offset))
              (delta-time (delta->seconds delta tempo))
              (seconds (+ seconds delta-time))
-             (stamped-event (cons id (cons seconds args))))
+             (stamped-event (cons* id delta-time delta args)))
         (loop (cdr events)
               (handle-tempo-change tempo args)
               seconds
@@ -260,7 +260,7 @@
 
 ;; SAVING ---------------------------------------------------------------------
 
-(define (midifile-pack-event event #!key (running-status 0) (pack-delta? #f))
+(define (midifile-pack-event event #!optional (running-status 0) (pack-delta? #f))
   (bitstring->blob (store-event event running-status pack-delta?)))
 
 (define (midifile-save mf name)
