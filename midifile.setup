@@ -1,0 +1,9 @@
+(compile -s midifile.scm -j midifile)
+(compile -s midifile.import.scm)
+
+(install-extension
+  'midifile
+  '("midifile.so" "midifile.import.so")
+  '((version "1.0")
+  ))
+
