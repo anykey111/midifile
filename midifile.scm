@@ -235,7 +235,7 @@
 (define (parse-midi-sysex-event delta event-data)
   (define (concat-sysex-data lst)
     (bitstring->blob (apply bitstring-append (reverse lst))))
-  (let loop ((acc (bitstring-create))
+  (let loop ((acc (bitstring-reserve 512))
              (event-data event-data))
     (receive (len var-data)
              (parse-variable-length event-data 0)
@@ -250,7 +250,7 @@
          (error "invalid sysex-event" (failure-location var-data)))))))
 
 (define (failure-location rest)
-  (let ((offset (/ (bitstring-offset rest) 8)))
+  (let ((offset (/ (bitstring-start rest) 8)))
     (list 'offset offset
           'bytes (bitstring->blob
                    (bitmatch rest
@@ -284,7 +284,7 @@
      (bitconstruct (frames 8) (clocks 8)))))
 
 (define (store-midi-tracks mf)
-  (define all-tracks (bitstring-create))
+  (define all-tracks (bitstring-reserve 4096))
   (for-each
    (lambda (track-data)
      (let ((track-size (quotient (bitstring-length track-data) 8)))
@@ -299,7 +299,7 @@
   (bitwise-ior (arithmetic-shift status 4) channel))
 
 (define (store-midi-track track)
-  (define acc (bitstring-create))
+  (define acc (bitstring-reserve 4096))
   (let loop ((running-status 0)
              (lst track))
     (match lst

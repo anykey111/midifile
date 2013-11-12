@@ -1,6 +1,6 @@
 ((license "LGPL")
  (category sound)
- (depends)
- (test-depends bitstring test)
+ (depends bitstring matchable defstruct)
+ (test-depends test)
  (author "rivo")
  (synopsis "MIDI file reader, writer, sequencer"))
